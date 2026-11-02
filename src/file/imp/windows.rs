@@ -15,12 +15,55 @@ use windows_sys::Win32::Storage::FileSystem::{
 
 use crate::util;
 
-fn to_utf16(s: &Path) -> Vec<u16> {
-    s.as_os_str().encode_wide().chain(iter::once(0)).collect()
+/// Encodes `path` as a NUL-terminated UTF-16 string for Win32 APIs.
+///
+/// Long paths are converted to the `\\?\` (verbatim) form, mirroring what the standard library
+/// does for its own file system calls. Unless the application manifest declares `longPathAware`,
+/// Win32 APIs like `MoveFileExW` reject paths longer than `MAX_PATH` even when long paths are
+/// enabled system-wide, but they always accept verbatim paths.
+fn to_utf16(path: &Path) -> io::Result<Vec<u16>> {
+    // Same threshold as the standard library: directories are limited to MAX_PATH - 12 (248).
+    const LEGACY_MAX_PATH: usize = 248;
+    const SEP: u16 = b'\\' as u16;
+    const VERBATIM_PREFIX: [u16; 4] = [SEP, SEP, b'?' as u16, SEP];
+    const DEVICE_PREFIX: [u16; 4] = [SEP, SEP, b'.' as u16, SEP];
+    const UNC_PREFIX: [u16; 8] = [
+        SEP,
+        SEP,
+        b'?' as u16,
+        SEP,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        SEP,
+    ];
+
+    let encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let encoded = if encoded.len() < LEGACY_MAX_PATH
+        || encoded.starts_with(&VERBATIM_PREFIX)
+        || encoded.starts_with(&DEVICE_PREFIX)
+    {
+        encoded
+    } else {
+        // Verbatim paths aren't normalized by Windows, so normalize first (this also resolves
+        // `.`, `..` and `/`).
+        let absolute: Vec<u16> = std::path::absolute(path)?
+            .as_os_str()
+            .encode_wide()
+            .collect();
+        if let Some(unc) = absolute.strip_prefix(&[SEP, SEP]) {
+            // \\server\share\... => \\?\UNC\server\share\...
+            UNC_PREFIX.iter().chain(unc).copied().collect()
+        } else {
+            // C:\... => \\?\C:\...
+            VERBATIM_PREFIX.iter().chain(&absolute).copied().collect()
+        }
+    };
+    Ok(encoded.into_iter().chain(iter::once(0)).collect())
 }
 
 fn not_supported<T>(msg: &str) -> io::Result<T> {
-    Err(io::Error::new(io::ErrorKind::Other, msg))
+    Err(io::Error::other(msg))
 }
 
 pub fn create_named(
@@ -28,7 +71,7 @@ pub fn create_named(
     open_options: &mut OpenOptions,
     permissions: Option<&std::fs::Permissions>,
 ) -> io::Result<File> {
-    if permissions.map_or(false, |p| p.readonly()) {
+    if permissions.is_some_and(|p| p.readonly()) {
         return not_supported("changing permissions is not supported on this platform");
     }
     open_options
@@ -80,7 +123,7 @@ pub fn reopen(file: &File, _path: &Path) -> io::Result<File> {
 
 pub fn keep(path: &Path) -> io::Result<()> {
     unsafe {
-        let path_w = to_utf16(path);
+        let path_w = to_utf16(path)?;
         if SetFileAttributesW(path_w.as_ptr(), FILE_ATTRIBUTE_NORMAL) == 0 {
             Err(io::Error::last_os_error())
         } else {
@@ -91,8 +134,8 @@ pub fn keep(path: &Path) -> io::Result<()> {
 
 pub fn persist(old_path: &Path, new_path: &Path, overwrite: bool) -> io::Result<()> {
     unsafe {
-        let old_path_w = to_utf16(old_path);
-        let new_path_w = to_utf16(new_path);
+        let old_path_w = to_utf16(old_path)?;
+        let new_path_w = to_utf16(new_path)?;
 
         // Don't succeed if this fails. We don't want to claim to have successfully persisted a file
         // still marked as temporary because this file won't have the same consistency guarantees.

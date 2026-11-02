@@ -635,7 +635,7 @@ fn test_reseed() {
     let mut files: Vec<_> = Vec::new();
     let _ = Builder::new().make(|path| -> io::Result<File> {
         if attempts == 5 {
-            return Err(io::Error::new(io::ErrorKind::Other, "stop!"));
+            return Err(io::Error::other("stop!"));
         }
         attempts += 1;
         let f = File::options()
@@ -691,4 +691,49 @@ fn test_overly_generic_bounds() {
             &mut f
         };
     }
+}
+
+#[test]
+#[cfg(windows)]
+fn test_persist_long_path() {
+    // Paths longer than MAX_PATH (260) must work even without a `longPathAware` manifest.
+    let base = tempdir().unwrap();
+    let mut dir = base.path().to_path_buf();
+    for i in 0..4 {
+        dir.push(format!("{i}_{}", "a".repeat(80)));
+    }
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(dir.as_os_str().len() > 260);
+
+    let tmpfile = NamedTempFile::new_in(&dir).unwrap();
+    let path = dir.join("persisted");
+    tmpfile.persist(&path).unwrap();
+    assert!(path.exists());
+
+    let tmpfile = NamedTempFile::new_in(&dir).unwrap();
+    let path = dir.join("persisted_noclobber");
+    tmpfile.persist_noclobber(&path).unwrap();
+    assert!(path.exists());
+
+    let tmpfile = NamedTempFile::new_in(&dir).unwrap();
+    let (_, path) = tmpfile.keep().unwrap();
+    assert!(path.exists());
+}
+
+#[test]
+#[cfg(windows)]
+fn test_persist_long_relative_path() {
+    // Relative and non-normalized long paths must be resolved before adding the `\?\` prefix.
+    let base = tempdir().unwrap();
+    let mut dir = base.path().to_path_buf();
+    for i in 0..4 {
+        dir.push(format!("{i}_{}", "b".repeat(80)));
+    }
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let tmpfile = NamedTempFile::new_in(&dir).unwrap();
+    // `<dir>/./sub/../persisted` with forward slashes.
+    let target = format!("{}/./sub/../persisted", dir.display());
+    tmpfile.persist(&target).unwrap();
+    assert!(dir.join("persisted").exists());
 }
