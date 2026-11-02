@@ -199,10 +199,10 @@ impl Read for SpooledTempFile {
 impl Write for SpooledTempFile {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         // roll over to file if necessary
-        if matches! {
+        if matches!(
             &self.inner, SpooledData::InMemory(cursor)
             if cursor.position().saturating_add(buf.len() as u64) > self.max_size as u64
-        } {
+        ) {
             self.roll()?;
         }
 
@@ -214,14 +214,14 @@ impl Write for SpooledTempFile {
     }
 
     fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
-        if matches! {
+        if matches!(
             &self.inner, SpooledData::InMemory(cursor)
             // Borrowed from the rust standard library.
             if bufs
                 .iter()
                 .fold(cursor.position(), |a, b| a.saturating_add(b.len() as u64))
                 > self.max_size as u64
-        } {
+        ) {
             self.roll()?;
         }
         match &mut self.inner {

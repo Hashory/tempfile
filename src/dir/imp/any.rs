@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::{fs, io};
 
 fn not_supported<T>(msg: &str) -> io::Result<T> {
-    Err(io::Error::new(io::ErrorKind::Other, msg))
+    Err(io::Error::other(msg))
 }
 
 pub fn create(
@@ -12,7 +12,7 @@ pub fn create(
     permissions: Option<&std::fs::Permissions>,
     disable_cleanup: bool,
 ) -> io::Result<TempDir> {
-    if permissions.map_or(false, |p| p.readonly()) {
+    if permissions.is_some_and(|p| p.readonly()) {
         return not_supported("changing permissions is not supported on this platform");
     }
     fs::create_dir(&path)
